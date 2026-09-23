@@ -124,6 +124,87 @@ def main():
         assert value == "Generated", repr(value)
         assert any(a.get("role") == "option" for a in page["actions"])
         passed.append("real text input waits for asynchronous combobox suggestions")
+
+        # Site headers often live in an open shadow root (e.g. a <provider-header> web component).
+        browser.evaluate("document.body.innerHTML='<div id=\"host\"></div>';"
+                         "const root=document.querySelector('#host').attachShadow({mode:'open'});"
+                         "root.innerHTML='<input aria-label=\"Shadow keyword\"><button>Shadow search</button>';"
+                         "root.querySelector('button').onclick=()=>{window.shadowClicks=(window.shadowClicks||0)+1}")
+        shadow_value = "document.querySelector('#host').shadowRoot.querySelector('input').value"
+        page = browser.observe(screenshot=False)
+        field = next((a for a in page["actions"] if a["kind"] == "fill" and a["label"] == "Shadow keyword"), None)
+        assert field, "Shadow-root field was not observed"
+        browser.act(field, page, text="Logo")
+        page = browser.observe(screenshot=False)
+        assert browser.evaluate(shadow_value) == "Logo"
+        passed.append("open shadow-root field is observed and filled")
+        button = next((a for a in page["actions"] if a["label"] == "Shadow search"), None)
+        assert button, "Shadow-root button was not observed"
+        browser.act(button, page)
+        assert browser.evaluate("window.shadowClicks") == 1
+        passed.append("open shadow-root button passes its own hit test")
+        page = browser.observe(screenshot=False)
+        button = next(a for a in page["actions"] if a["label"] == "Shadow search")
+        browser.evaluate("const shadowCover=document.createElement('div'); "
+                         "shadowCover.style.cssText='position:fixed;inset:0;z-index:9999;background:white'; "
+                         "document.body.append(shadowCover)")
+        try:
+            browser.act(button, page)
+        except (RuntimeError, StalePage):
+            pass
+        else:
+            raise AssertionError("Covered shadow-root target was clicked")
+        assert browser.evaluate("window.shadowClicks") == 1
+        passed.append("document overlay blocks a shadow-root target")
+        browser.evaluate("document.body.lastElementChild.remove()")
+        page = browser.observe(screenshot=False)
+        browser.evaluate(shadow_value + "='Other'")
+        assert not browser.fresh(page)
+        passed.append("shadow-root field value invalidates the page marker")
+
+        # Nested component whose label is slotted light-DOM text, e.g. <app-button>Log in</app-button>.
+        browser.evaluate("document.body.innerHTML='<div id=\"outer\"></div>';"
+                         "customElements.get('x-btn')||customElements.define('x-btn',class extends HTMLElement{"
+                         "constructor(){super();this.attachShadow({mode:'open'}).innerHTML="
+                         "'<button style=\"width:180px;height:50px\"><slot></slot></button>';"
+                         "this.shadowRoot.querySelector('button').onclick="
+                         "()=>{window.nestedClicks=(window.nestedClicks||0)+1}}});"
+                         "document.querySelector('#outer').attachShadow({mode:'open'}).innerHTML="
+                         "'<x-btn>Nested go</x-btn>'")
+        page = browser.observe(screenshot=False)
+        nested = next((a for a in page["actions"] if a["label"] == "Nested go"), None)
+        assert nested, "Slotted label of a nested shadow-root button was not observed"
+        browser.act(nested, page)
+        assert browser.evaluate("window.nestedClicks") == 1
+        passed.append("nested shadow-root button is named from its slot and clicked")
+        page = browser.observe(screenshot=False)
+        nested = next(a for a in page["actions"] if a["label"] == "Nested go")
+        browser.evaluate("document.body.append(Object.assign(document.createElement('div'),"
+                         "{style:'position:fixed;inset:0;z-index:9999;background:white'}))")
+        try:
+            browser.act(nested, page)
+        except (RuntimeError, StalePage):
+            pass
+        else:
+            raise AssertionError("Covered nested shadow-root target was clicked")
+        assert browser.evaluate("window.nestedClicks") == 1
+        passed.append("document overlay blocks a nested shadow-root target")
+
+        # A search box that submits only on Enter (no Search button), like Coconala's header.
+        browser.evaluate("document.body.innerHTML='<input aria-label=\"Keyword\">"
+                         "<textarea aria-label=\"Notes\">x</textarea>';"
+                         "document.querySelector('input').addEventListener('keydown',"
+                         "e=>{if(e.key==='Enter')window.submitted=e.target.value})")
+        page = browser.observe(screenshot=False)
+        assert not any(a["kind"] == "enter" for a in page["actions"]), "Empty field or textarea offered Enter"
+        field = next(a for a in page["actions"] if a["kind"] == "fill" and a["label"] == "Keyword")
+        browser.act(field, page, text="Logo")
+        page = browser.observe(screenshot=False)
+        enter = [a for a in page["actions"] if a["kind"] == "enter"]
+        assert [a["label"] for a in enter] == ["Submit Keyword"], enter
+        browser.act(enter[0], page)
+        assert browser.evaluate("window.submitted") == "Logo"
+        passed.append("Enter is offered only for a filled single-line field and submits it")
         browser.call("Page.navigate", url="about:blank")
         assert not browser.fresh(page, field)
         passed.append("navigation invalidates the old document")

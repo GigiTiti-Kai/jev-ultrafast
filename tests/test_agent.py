@@ -113,6 +113,49 @@ def test_click_cannot_consume_a_text_target(monkeypatch):
         model.choose(page(), "Find a book", [])
 
 
+def test_filled_field_offers_its_own_press_enter_head(monkeypatch):
+    state = page()
+    state["actions"].insert(2, {"id": "e4", "kind": "enter", "label": "Submit Search", "role": "textbox",
+                                "value": "books", "node": 10})
+    elements, targets, _ = model.action_space(state["actions"])
+    assert elements[0]["operations"] == ["TYPE_TEXT", "CLICK", "PRESS_ENTER"]
+    assert list(targets["PRESS_ENTER"]) == ["1"] and targets["PRESS_ENTER"]["1"]["id"] == "e4"
+
+    def post(_url, _key, body):
+        assert "PRESS_ENTER" in body["questions"]["operation"]["criteria"]
+        return {
+            "model": "test",
+            "answers": {
+                "operation": choice(body["questions"]["operation"]["criteria"], "PRESS_ENTER"),
+                "press_enter_target": choice(["1"], "1"),
+            },
+        }
+
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test")
+    monkeypatch.setattr(model, "post_json", post)
+    d = model.choose(state, "Search for books", [])
+    assert d["operation"] == "PRESS_ENTER" and d["choice"] == "e4"
+
+
+def test_press_enter_focuses_the_observed_field_then_sends_enter(monkeypatch):
+    import jev_ultrafast.browser as browser
+
+    cdp = Mock(side_effect=lambda method, **_: {"result": {"value": {"x": 5, "y": 6}}}
+               if method == "Runtime.evaluate" else {})
+    monkeypatch.setattr(browser, "cdp", cdp)
+    browser_operation({"operation": "act", "session": "test", "action": {
+        "id": "e4", "kind": "enter", "node": 10,
+    }})
+    calls = [(c.args[0], c.kwargs.get("type"), c.kwargs.get("key")) for c in cdp.call_args_list]
+    assert calls == [
+        ("Runtime.evaluate", None, None),
+        ("Input.dispatchMouseEvent", "mousePressed", None),
+        ("Input.dispatchMouseEvent", "mouseReleased", None),
+        ("Input.dispatchKeyEvent", "keyDown", "Enter"),
+        ("Input.dispatchKeyEvent", "keyUp", "Enter"),
+    ]
+
+
 def test_target_head_receives_control_state_and_full_next_step_rules(monkeypatch):
     p = page()
     p["actions"].insert(0, {

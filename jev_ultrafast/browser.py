@@ -58,7 +58,9 @@ class Browser:
                         if (stopped) return;
                         const ids=(field?.getAttribute('aria-controls')||field?.getAttribute('aria-owns')||'')
                           .split(/\\s+/).filter(Boolean);
-                        const roots=ids.length ? ids.map(id=>document.getElementById(id)).filter(Boolean) : [document];
+                        const scope=field?.getRootNode?.() || document;
+                        const roots=ids.length ? ids.map(id=>scope.getElementById?.(id)).filter(Boolean) :
+                          [...new Set([document,scope])];
                         const options=roots.flatMap(root=>[...root.querySelectorAll('[role="option"]')]);
                         if (++frames>=2 && (!autocomplete || options.some(e=>{
                           const r=e.getBoundingClientRect();
@@ -86,7 +88,7 @@ class Browser:
         raise StalePage("Page did not settle")
 
     def fresh(self, page, action=None):
-        if action is not None and action["kind"] in {"click", "select"}:
+        if action is not None and action["kind"] in {"click", "select", "enter"}:
             node = action["node"]
             if type(node) is not int:
                 return False
@@ -145,10 +147,18 @@ def browser_operation(request):
               const e=window.__jevFast?.nodes.get(action.node);
               if (!e?.isConnected || e.matches(':disabled') || e.closest('[aria-disabled="true"],[inert]') ||
                   !e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return null;
-              if (action.kind==='fill' && (e.readOnly || e.getAttribute('aria-readonly')==='true')) return null;
+              if (['fill','enter'].includes(action.kind) && (e.readOnly || e.getAttribute('aria-readonly')==='true'))
+                return null;
               const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2;
               if (!r.width || !r.height || x<0 || y<0 || x>=innerWidth || y>=innerHeight) return null;
-              if (!e.contains(document.elementFromPoint(x,y))) return null;
+              const own=e.getRootNode(), hit=own.elementFromPoint(x,y);
+              // Slotted light-DOM text retargets to the host; accept it only when it sits in a slot inside e.
+              const slotted=hit && hit===own.host && [...e.querySelectorAll('slot')].some(s=>
+                s.assignedNodes({flatten:true}).some(n=>{
+                  const range=document.createRange(); range.selectNode(n); const b=range.getBoundingClientRect();
+                  return x>=b.left && x<=b.right && y>=b.top && y<=b.bottom;
+                }));
+              if (!e.contains(hit) && !slotted) return null;
               if (action.kind==='select') {
                 if (e.tagName!=='SELECT' || ![...e.options].some(o=>o.value===action.value &&
                     !o.disabled && !o.closest('optgroup[disabled]'))) return null;
@@ -183,6 +193,10 @@ def browser_operation(request):
                         modifiers=4 if sys.platform == "darwin" else 2,
                     )
                     call("Input.insertText", text=request["text"])
+                elif kind == "enter":
+                    key = {"key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13}
+                    call("Input.dispatchKeyEvent", type="keyDown", text="\r", **key)
+                    call("Input.dispatchKeyEvent", type="keyUp", **key)
         return {"executed": action["id"]}
 
     info = evaluate(READ_STATE)
